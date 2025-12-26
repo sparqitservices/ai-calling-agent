@@ -2,8 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const OpenAI = require("openai");
-const path = require("path");
-const fs = require("fs-extra");
 const axios = require("axios");
 
 const app = express();
@@ -11,9 +9,6 @@ const app = express();
 // Twilio sends form-encoded data
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-
-// Serve generated audio files publicly
-app.use("/audio", express.static(path.join(__dirname, "audio")));
 
 // OpenAI client
 const openai = new OpenAI({
@@ -28,20 +23,18 @@ app.get("/", (req, res) => {
 });
 
 // --------------------
-// ELEVENLABS VOICE GENERATOR
+// ELEVENLABS STREAMING TTS
 // --------------------
-async function generateVoice(text, filename) {
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`;
-
+async function streamVoice(text, res) {
   const response = await axios.post(
-    url,
+    `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
     {
       text,
       model_id: "eleven_multilingual_v2",
       voice_settings: {
-        stability: 0.25,          // natural, confident
-        similarity_boost: 0.85,  // close to cloned voice
-        style: 0.7,              // conversational
+        stability: 0.25,
+        similarity_boost: 0.85,
+        style: 0.7,
         use_speaker_boost: true
       }
     },
@@ -55,55 +48,51 @@ async function generateVoice(text, filename) {
     }
   );
 
-  const filePath = path.join(__dirname, "audio", filename);
-  await fs.writeFile(filePath, response.data);
-
-  return filePath;
+  res.set("Content-Type", "audio/mpeg");
+  res.send(response.data);
 }
 
 // --------------------
-// CALL ENTRY (GREETING)
+// TTS ENDPOINT (FOR TWILIO <Play>)
 // --------------------
-app.post("/voice", async (req, res) => {
-  res.type("text/xml");
-
+app.get("/tts", async (req, res) => {
   try {
-    const greetingText =
-      "Hey, main hoon. Bas thoda sa check kar raha tha. Batao, aaj tum kaisi feel kar rahi ho?";
+    const text = req.query.text;
+    if (!text) {
+      return res.status(400).send("Missing text");
+    }
 
-    const fileName = `greeting-${Date.now()}.mp3`;
-    await generateVoice(greetingText, fileName);
-
-    const audioUrl = `${req.protocol}://${req.get("host")}/audio/${fileName}`;
-
-    res.send(`
-      <Response>
-        <Play>${audioUrl}</Play>
-
-        <Gather
-          input="speech"
-          speechTimeout="auto"
-          action="/process"
-          method="POST"
-        >
-          <Say voice="alice"> </Say>
-        </Gather>
-
-        <Hangup/>
-      </Response>
-    `);
+    await streamVoice(text, res);
   } catch (error) {
-    console.error("Greeting error:", error);
-
-    res.send(`
-      <Response>
-        <Say voice="alice">
-          Thoda sa issue aa gaya hai. Main baad mein call karta hoon.
-        </Say>
-        <Hangup/>
-      </Response>
-    `);
+    console.error("TTS ERROR:", error);
+    res.status(500).send("TTS failed");
   }
+});
+
+// --------------------
+// CALL ENTRY POINT (GREETING)
+// --------------------
+app.post("/voice", (req, res) => {
+  const greeting =
+    "Hey, main hoon. Bas thoda sa check kar raha tha. Batao, aaj tum kaisi feel kar rahi ho?";
+
+  const ttsUrl = `https://${req.get("host")}/tts?text=${encodeURIComponent(
+    greeting
+  )}`;
+
+  res.type("text/xml");
+  res.send(`
+    <Response>
+      <Play>${ttsUrl}</Play>
+      <Gather
+        input="speech"
+        speechTimeout="auto"
+        action="/process"
+        method="POST"
+      />
+      <Hangup/>
+    </Response>
+  `);
 });
 
 // --------------------
@@ -116,17 +105,16 @@ app.post("/process", async (req, res) => {
     const userSpeech = req.body.SpeechResult;
 
     if (!userSpeech || userSpeech.trim() === "") {
-      const fallbackText =
+      const fallback =
         "Koi baat nahi. Main thodi der mein phir baat karta hoon.";
 
-      const fileName = `fallback-${Date.now()}.mp3`;
-      await generateVoice(fallbackText, fileName);
-
-      const audioUrl = `${req.protocol}://${req.get("host")}/audio/${fileName}`;
+      const ttsUrl = `https://${req.get("host")}/tts?text=${encodeURIComponent(
+        fallback
+      )}`;
 
       return res.send(`
         <Response>
-          <Play>${audioUrl}</Play>
+          <Play>${ttsUrl}</Play>
           <Hangup/>
         </Response>
       `);
@@ -134,14 +122,14 @@ app.post("/process", async (req, res) => {
 
     console.log("User said:", userSpeech);
 
-    // 🔹 OpenAI — Hinglish / Hindi response
+    // OpenAI — Hindi / Hinglish, short & natural
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content:
-            "Tum ek caring Indian husband ho. Normal Hinglish Hindi mein baat karo. Sirf ek chhota, natural sentence bolo. Bilkul normal Indian tone mein.",
+            "Tum ek caring Indian husband ho. Normal Hinglish Hindi mein sirf ek chhota, natural sentence bolo. Bilkul human tone.",
         },
         {
           role: "user",
@@ -154,34 +142,29 @@ app.post("/process", async (req, res) => {
       completion.choices?.[0]?.message?.content ||
       "Theek hai, sunke achha laga.";
 
-    // 🔹 ElevenLabs audio
-    const fileName = `reply-${Date.now()}.mp3`;
-    await generateVoice(aiReply, fileName);
-
-    const audioUrl = `${req.protocol}://${req.get("host")}/audio/${fileName}`;
+    const ttsUrl = `https://${req.get("host")}/tts?text=${encodeURIComponent(
+      aiReply
+    )}`;
 
     return res.send(`
       <Response>
-        <Play>${audioUrl}</Play>
-        <Pause length="1"/>
-        <Play>${audioUrl}</Play>
+        <Play>${ttsUrl}</Play>
         <Hangup/>
       </Response>
     `);
   } catch (error) {
-    console.error("AI / ELEVENLABS ERROR:", error);
+    console.error("AI ERROR:", error);
 
     const errorText =
       "Thoda sa technical issue aa gaya. Main baad mein call karta hoon.";
 
-    const fileName = `error-${Date.now()}.mp3`;
-    await generateVoice(errorText, fileName);
-
-    const audioUrl = `${req.protocol}://${req.get("host")}/audio/${fileName}`;
+    const ttsUrl = `https://${req.get("host")}/tts?text=${encodeURIComponent(
+      errorText
+    )}`;
 
     return res.send(`
       <Response>
-        <Play>${audioUrl}</Play>
+        <Play>${ttsUrl}</Play>
         <Hangup/>
       </Response>
     `);
