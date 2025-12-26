@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">
+    Hey! This is just a friendly check-in.
+    How are you feeling right now?
+  </Say>
+
+  <Gather input="speech" action="/process" timeout="5">
+    <Say voice="alice">I'm listening.</Say>
+  </Gather>
+
+  <Say voice="alice">
+    I didn’t hear anything. I’ll call you later.
+    Take care.
+  </Say>
+</Response>
