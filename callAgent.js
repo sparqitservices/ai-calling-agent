@@ -10,7 +10,7 @@ async function makeCall() {
   await client.calls.create({
     from: process.env.TWILIO_PHONE_NUMBER,
     to: process.env.WIFE_PHONE_NUMBER,
-    url: "https://lovelier-multigranulated-sheryl.ngrok-free.dev/voice"
+    url: "https://ai-calling-agent-chi.vercel.app/voice"
   });
 
   console.log("Call placed successfully");
